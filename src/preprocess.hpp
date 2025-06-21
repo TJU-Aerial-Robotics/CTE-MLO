@@ -75,8 +75,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point,
 class Preprocess
 {
   public:
-  Preprocess() {    
-  }
+  Preprocess() {}
   ~Preprocess(){}
   
   void process(const livox_ros_driver2::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out, const int lidar_id) {  

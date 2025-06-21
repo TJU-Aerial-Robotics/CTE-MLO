@@ -23,6 +23,7 @@ mapping:
     k1: 500 # the degeneration threshold
     extrinsic_T: [0,0,0] 
     extrinsic_R: [1, 0, 0, 0]
+    use_prebuild_map: false
 
 publish:
     path_en:  true
