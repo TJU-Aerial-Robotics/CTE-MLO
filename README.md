@@ -95,6 +95,20 @@ rosbag play PULSAR.bag --clock
 
 *Remark:* We recommend setting the ```PCS``` to ```False``` when working with a single LiDAR mode.
 
+## LiDAR-Only Localization on Pre-build Map
+The CTE-MLO can be easily configured to perform localization on a pre-built map by setting ```use_prebuild_map: True``` in the ```.yaml```.
+Don't forget to specify the path of the pre-built map by setting the ```offline_map_path``` in ```.yaml```.
+The ```init_T``` in the ```.yaml``` file represents the initial pose of the first scan in the pre-build map, which can be obtained either from a ground truth trajectory or through point cloud registration between the first scan and the pre-built map. To facilitate registration, we provide a [point cloud registration GUI](https://github.com/TobyLyu/icp_gui).
+
+
+Testing on MCD Prior Map:
+```
+source ~/ctemlo_ws/devel/setup.bash
+roslaunch cte_mlo mapping_mcd_prior.launch
+rosbag play ntu_day_01/ntu_day_01_mid70.bag
+```
+*Remark:* Please wait until the terminal displays ```The Pre-build Map has been Voxelized``` before playing the rosbag.
+
 ## Acknowledgments
 This project is developed based on [FAST-LIO2](https://github.com/hku-mars/FAST_LIO), [BALM](https://github.com/hku-mars/BALM), and [X-ICP](https://sites.google.com/leggedrobotics.com/x-icp). Thanks for their excellent work!
 

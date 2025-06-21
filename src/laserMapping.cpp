@@ -49,9 +49,8 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-// #include <pcl/filters/voxel_grid.h>
-#include <pcl/filters/uniform_sampling.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/point_traits.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
@@ -93,15 +92,13 @@ vector<double>       extrinR(9, 0.0);
 deque<PointCloudXYZI> lidar_buffer;
 deque<vector<double>> gt_buffer;
 
-PointCloudXYZI::Ptr featsFromMap(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_body(new PointCloudXYZI());
-PointCloudXYZI::Ptr feats_down_world(new PointCloudXYZI());
 PointCloudXYZI::Ptr normvec(new PointCloudXYZI(100000, 1));
 PointCloudXYZI::Ptr laserCloudOri(new PointCloudXYZI(100000, 1));
 PointCloudXYZI::Ptr corr_normvect(new PointCloudXYZI(100000, 1));
 
-pcl::UniformSampling<PointType> downSizeFilterSurf;
+pcl::UniformSampling<PointType> downSizeFilterSurf;//, downSizeFilterPCD;
 bool runtime_pos_log = false;
 
 /*** EKF inputs and output ***/
@@ -136,11 +133,12 @@ int fix_rate = 50;
 ros::Publisher pubOdomAftMapped, pubPath, pubgtPath, pubLaserCloudFull, points_norm_pub, voxel_map_pub;
 ros::Publisher pubLaserCloudFull_body;
 FILE *fp;
+std::ofstream pose_json;
 bool pcs = true;
 int rms_win_size = 10;
 double k1 = 180;
 pcl::KdTreeFLANN<PointType>::Ptr kdtreeNorm;
-
+pcl::PointCloud<pcl::PointXYZI>::Ptr pre_build_cloud(new pcl::PointCloud<pcl::PointXYZI>);
 inline void dump_mlo_state_to_log(FILE *fp) {
     //TUM Format
     fprintf(fp, "%lf ", lidar_end_time); // Time 0
@@ -150,10 +148,21 @@ inline void dump_mlo_state_to_log(FILE *fp) {
     fflush(fp);
 }
 
-void pointBodyToWorld(PointType const * const pi, PointType * const po)
-{
+void pointWorldToBody(PointType* pi, pcl::PointXYZI* po) {
+    V3D p_world(pi->x, pi->y, pi->z);
+    Eigen::Quaterniond quat(geoQuat.w, geoQuat.x, geoQuat.y, geoQuat.z);
+    V3D p_body(quat.toRotationMatrix().transpose()*(p_world - pos_cur));
+    po->x = p_body(0);
+    po->y = p_body(1);
+    po->z = p_body(2);
+    po->intensity = pi->intensity;
+}
+
+template <typename PointT>
+void pointBodyToWorld(PointT* pi, PointT* po) {
     V3D p_body(pi->x, pi->y, pi->z);
-    double dt = pi->curvature/double(1000);
+    double dt = 0.0;
+    if constexpr (pcl::traits::has_curvature<PointT>::value) dt = pi->curvature/double(1000);
     V3D acc_w = state_point.rot.toRotationMatrix()*state_point.acc;
     V3D p_global(state_point.rot.toRotationMatrix()*Exp(state_point.omg, dt)*(p_kf->Lidar_R_wrt_IMU*p_body + p_kf->Lidar_T_wrt_IMU)
                  + state_point.pos + state_point.vel*dt + 0.5*acc_w*dt*dt);
@@ -314,18 +323,26 @@ bool sync_packages(MeasureGroup &meas) {
     return true;
 }
 
-void cut_voxel(std::unordered_map<VOXEL_LOC, OCTO_TREE*> &feat_map, pcl::PointCloud<PointType>::Ptr pl_feat) {
+template <typename PointT>
+void cut_voxel(std::unordered_map<VOXEL_LOC, OCTO_TREE*> &feat_map, typename pcl::PointCloud<PointT>::Ptr pl_feat) {
     feat_map_update_iter.clear();
     auto size = pl_feat->points.size();
-    PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
+    typename pcl::PointCloud<PointT>::Ptr laserCloudWorld(new pcl::PointCloud<PointT>(size, 1));
+    if (PREBUILDMAP) {
+        cout << "Getting Point Cloud from Pre-build Map ..." << endl;
+        *laserCloudWorld = *pl_feat;
+    } else {
 #ifdef MP_EN
     omp_set_num_threads(MP_PROC_NUM);
     #pragma omp parallel for
 #endif
-    for (int i = 0; i < size; i++) {
-        pointBodyToWorld(&pl_feat->points[i], &laserCloudWorld->points[i]);
+        for (int i = 0; i < size; i++) {
+            pointBodyToWorld<PointT>(&pl_feat->points[i], &laserCloudWorld->points[i]);
+        }
     }
-    std::for_each(std::execution::unseq, laserCloudWorld->points.begin(), laserCloudWorld->points.end(), [](const auto& pt_w) {
+
+    
+    std::for_each(std::execution::unseq, laserCloudWorld->points.begin(), laserCloudWorld->points.end(), [size](const auto& pt_w) {
         V3D pvec_tran(pt_w.x, pt_w.y, pt_w.z);
         VOXEL_LOC position(floor(pvec_tran[0]/rootSurfVoxelSize), floor(pvec_tran[1]/rootSurfVoxelSize), floor(pvec_tran[2]/rootSurfVoxelSize));
         // Find corresponding voxel
@@ -346,6 +363,11 @@ void cut_voxel(std::unordered_map<VOXEL_LOC, OCTO_TREE*> &feat_map, pcl::PointCl
             ot->quater_length = rootSurfVoxelSize / 4.0;
             surf_map[position] = ot;
             feat_map_update_iter.push_back(surf_map.find(position));
+        }
+        static size_t cnt = 0;
+        if (++cnt % 10000 == 0 && PREBUILDMAP) {
+            std::cout << "\rPre-build Map Processed: " << cnt << " / " << size 
+                      << " (" << (100.0 * cnt / size) << "%)" << std::flush;
         }
     });
     /****************Update voxels which has new points******************/
@@ -368,7 +390,7 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
     #pragma omp parallel for
 #endif
         for (int i = 0; i < size; i++) {
-            pointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i]);
+            pointBodyToWorld<PointType>(&laserCloudFullRes->points[i], &laserCloudWorld->points[i]);
         }
 
         sensor_msgs::PointCloud2 laserCloudmsg;
@@ -379,15 +401,37 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
         if (pcd_save_en) {
             *pcl_wait_save += *laserCloudWorld;
             static int scan_wait_num = 0;
-            scan_wait_num++;
+            scan_wait_num++; 
+            // if (scan_wait_num % (fix_rate*300) == 0) {
+            //     PointCloudXYZI::Ptr pcl_down_world(new PointCloudXYZI());
+            //     downSizeFilterPCD.setInputCloud(pcl_wait_save);
+            //     downSizeFilterPCD.filter(*pcl_down_world);
+            //     pcl_down_world->swap(*pcl_wait_save);
+            // }
             if (pcl_wait_save->size() > 0 && pcd_save_interval > 0  && scan_wait_num >= pcd_save_interval) {
-                pcd_index ++;
-                string all_points_dir(log_dir + "scans_" + to_string(pcd_index) + ".pcd");
+                std::ostringstream oss;
+                oss << std::setw(5) << std::setfill('0') << pcd_index;
+                string all_points_dir(log_dir + oss.str() + ".pcd");
                 pcl::PCDWriter pcd_writer;
                 cout << "current scan saved to " << all_points_dir << endl;
-                pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+                size = pcl_wait_save->size();
+                pcl::PointCloud<pcl::PointXYZI>::Ptr laserCloudBody(new pcl::PointCloud<pcl::PointXYZI>(size, 1));
+#ifdef MP_EN
+    omp_set_num_threads(MP_PROC_NUM);
+    #pragma omp parallel for
+#endif
+                for (int i = 0; i < size; i++) {
+                    pointWorldToBody(&pcl_wait_save->points[i], &laserCloudBody->points[i]);
+                }
+                pcd_writer.writeBinary(all_points_dir, *laserCloudBody);
                 pcl_wait_save->clear();
                 scan_wait_num = 0;
+                pcd_index ++;
+                pose_json << std::fixed << std::setprecision(15);
+                pose_json << lidar_end_time << " " 
+                          << pos_cur(0) << " " << pos_cur(1) << " " << pos_cur(2) << " "
+                          << geoQuat.w << " " << geoQuat.x << " " << geoQuat.y << " " << geoQuat.z;
+                pose_json << "\n";
             }
         }
     }
@@ -829,11 +873,11 @@ void lioThread() {
             feats_down_size = feats_down_body->points.size();
             
             if(!surf_map.size() || !flg_EKF_inited) {
-                if(feats_down_size > 5) {
+                if(feats_down_size > 5 && !PREBUILDMAP) {
 #ifdef VIS_VOXEL_MAP
                     mtx_map.lock();
 #endif
-                    cut_voxel(surf_map, feats_down_body);
+                    cut_voxel<PointType>(surf_map, feats_down_body);
 #ifdef VIS_VOXEL_MAP
                     mtx_map.unlock();
 #endif
@@ -853,7 +897,6 @@ void lioThread() {
             }
 
             normvec->resize(feats_down_size);
-            feats_down_world->resize(feats_down_size);
 
             t2 = omp_get_wtime();
             
@@ -877,13 +920,15 @@ void lioThread() {
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
+            if (!PREBUILDMAP) {
 #ifdef VIS_VOXEL_MAP
-            mtx_map.lock();
+                mtx_map.lock();
 #endif
-            cut_voxel(surf_map, feats_down_body);
+                cut_voxel<PointType>(surf_map, feats_down_body);
 #ifdef VIS_VOXEL_MAP
-            mtx_map.unlock();
+                mtx_map.unlock();
 #endif
+            }
 
             t5 = omp_get_wtime();
 
@@ -953,6 +998,21 @@ int main(int argc, char** argv)
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
     nh.param<double>("mapping/k1", k1, 180);
+   
+    nh.param<bool>("mapping/use_prebuild_map", PREBUILDMAP, false);
+    std::vector<double> init_T;
+    nh.param<vector<double>>("mapping/init_T", init_T, std::vector<double>());
+    p_kf->init_pose<<MAT_FROM_ARRAY(init_T);
+    if (PREBUILDMAP) {
+        std::string offline_map_path;
+        nh.param<std::string>("mapping/offline_map_path", offline_map_path, "");
+        cout << "Loading Pre-build Map PCD ..." << endl;
+        if (pcl::io::loadPCDFile<pcl::PointXYZI>(offline_map_path, *pre_build_cloud) == -1) {
+            PCL_ERROR("Couldn't read Pre-build Map.\n");
+        }
+        cut_voxel<pcl::PointXYZI>(surf_map, pre_build_cloud);
+        PCL_ERROR("The Pre-build Map has been Voxelized.\n");
+    }
     
     path.header.stamp    = ros::Time::now();
     path.header.frame_id ="camera_init";
@@ -964,6 +1024,7 @@ int main(int argc, char** argv)
     double deltaT, deltaR;
     bool flg_EKF_converged, EKF_stop_flg = 0;
     downSizeFilterSurf.setRadiusSearch(filter_size_surf_min);
+    // downSizeFilterPCD.setRadiusSearch(0.2);
 
     double epsi[15];
     fill(epsi, epsi+15, 0.001);
@@ -973,10 +1034,14 @@ int main(int argc, char** argv)
     kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
     
     /*** debug record ***/
-    log_dir = root_dir + "/Log/";
+    log_dir = root_dir + "Log/";
     if (!filesystem::exists(log_dir)) filesystem::create_directories(log_dir);
     string pos_log_dir = log_dir+"pos_log.txt";
     fp = fopen(pos_log_dir.c_str(),"w");
+
+    pose_json.open(log_dir + "pose.json", std::ofstream::trunc);
+    pose_json.close();
+    pose_json.open(log_dir + "pose.json", std::ofstream::app);
 
     lidar_msg_buffer.resize(lidar_num);
     Measures.lidar.resize(lidar_num);
@@ -1054,5 +1119,6 @@ int main(int argc, char** argv)
         }
         fclose(fp2);
     }
+    pose_json.close();
     return 0;
 }

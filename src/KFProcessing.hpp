@@ -12,10 +12,12 @@
 #include <pcl/common/io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <condition_variable>
-#include <nav_msgs/Odometry.h>
 #include <pcl/common/transforms.h>
 #include <pcl/kdtree/kdtree_flann.h>
+// #include <pcl/registration/gicp.h>
+#include <pcl/filters/uniform_sampling.h>
+#include <condition_variable>
+#include <nav_msgs/Odometry.h>
 #include <tf/transform_broadcaster.h>
 #include <eigen_conversions/eigen_msg.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -23,6 +25,9 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <geometry_msgs/Vector3.h>
 #include "use-ikfom.hpp"
+
+// #define PREBUILDMAP
+bool PREBUILDMAP = false;
 
 const bool time_list(PointType &x, PointType &y) {return (x.curvature < y.curvature);};
 const bool norm_list(std::pair<int,double> &x, std::pair<int,double> &y) {return (x.second > y.second);};
@@ -58,8 +63,9 @@ class KFProcess
   M3D Lidar_R_wrt_IMU;
   V3D Lidar_T_wrt_IMU;
   double first_lidar_time;
+  Eigen::Matrix<double, 4, 4> init_pose;
  private:
-  void init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 6> &kf_state);
+  void init(esekfom::esekf<state_ikfom, 6> &kf_state);
   void pointLidarToLidar(PointType const * const pi, PointType * const po, const int lidar_id);
   double last_lidar_beg_time_ = -1.0;
   bool kf_need_init_ = true;
@@ -111,10 +117,15 @@ void KFProcess::set_acc_cov(const V3D &scaler)
   cov_acc_scale = scaler;
 }
 
-void KFProcess::init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 6> &kf_state) {
+void KFProcess::init(esekfom::esekf<state_ikfom, 6> &kf_state) {
   state_ikfom init_state = kf_state.get_x();
-  init_state.rot = Eye3d;
-  init_state.pos = Zero3d;
+  if (PREBUILDMAP) {
+    init_state.rot = init_pose.block<3,3>(0,0);
+    init_state.pos = V3D(init_pose(0,3), init_pose(1,3), init_pose(2,3));
+  } else {
+    init_state.rot = Eye3d;
+    init_state.pos = Zero3d;
+  }
   init_state.vel = Zero3d;
   init_state.omg = Zero3d;
   init_state.acc = Zero3d;
@@ -143,7 +154,7 @@ void KFProcess::pointLidarToLidar(PointType const * const pi, PointType * const 
 void KFProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 6> &kf_state, 
                         PointCloudXYZI::Ptr cur_pcl_un_, bool flg_EKF_inited) {
   if (kf_need_init_) {
-    init(meas, kf_state);
+    init(kf_state);
     kf_need_init_ = false;
     last_lidar_beg_time_ = meas.lidar_beg_time;
     return;

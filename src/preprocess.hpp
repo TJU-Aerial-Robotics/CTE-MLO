@@ -75,9 +75,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point,
 class Preprocess
 {
   public:
-  Preprocess() {
-    blind_sq = blind*blind;
-  }
+  Preprocess() {}
   ~Preprocess(){}
   
   void process(const livox_ros_driver2::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out, const int lidar_id) {  
@@ -153,7 +151,7 @@ class Preprocess
     // double t0 = omp_get_wtime();
     for (int i = 0; i < pl_orig.points.size(); i++) {
       auto &src = pl_orig.points[i];
-      if (i % point_filter_num[lidar_id] != 0 || src.x * src.x + src.y * src.y + src.z * src.z< blind_sq) continue;
+      if (i % point_filter_num[lidar_id] != 0 || src.x * src.x + src.y * src.y + src.z * src.z< blind*blind) continue;
       PointType added_pt;
       added_pt.x = src.x;
       added_pt.y = src.y;
@@ -189,7 +187,7 @@ class Preprocess
 
       if (i % point_filter_num[lidar_id] == 0)
       {
-        if(added_pt.x*added_pt.x+added_pt.y*added_pt.y+added_pt.z*added_pt.z > blind_sq)
+        if(added_pt.x*added_pt.x+added_pt.y*added_pt.y+added_pt.z*added_pt.z > blind*blind)
         {
           pl_surf.points.push_back(added_pt);
         }
@@ -206,7 +204,7 @@ class Preprocess
       valid_num ++;
       if (valid_num % point_filter_num[lidar_id] == 0) {
         auto &src = msg->points[i];
-        if(src.x * src.x + src.y * src.y + src.z * src.z > blind_sq) {
+        if(src.x * src.x + src.y * src.y + src.z * src.z > blind*blind) {
           PointType dst;
           dst.x = src.x;
           dst.y = src.y;
@@ -240,7 +238,7 @@ class Preprocess
 
           if(((abs(pl_full[i].x - pl_full[i-1].x) > 1e-7) || (abs(pl_full[i].y - pl_full[i-1].y) > 1e-7)
               || (abs(pl_full[i].z - pl_full[i-1].z) > 1e-7))
-              && (pl_full[i].x * pl_full[i].x + pl_full[i].y * pl_full[i].y + pl_full[i].z * pl_full[i].z > blind_sq)) {
+              && (pl_full[i].x * pl_full[i].x + pl_full[i].y * pl_full[i].y + pl_full[i].z * pl_full[i].z > blind*blind)) {
                 pl_full[i].normal_x = 0;
                 pl_full[i].normal_y = 0;
                 pl_full[i].normal_z = 0;
@@ -274,7 +272,7 @@ class Preprocess
       added_pt.curvature = (pl_orig.points[i].timestamp - pl_orig.points[0].timestamp)*time_unit_scale;
       if (i % point_filter_num[lidar_id] == 0)
       {
-        if(added_pt.x*added_pt.x+added_pt.y*added_pt.y+added_pt.z*added_pt.z > blind_sq)
+        if(added_pt.x*added_pt.x+added_pt.y*added_pt.y+added_pt.z*added_pt.z > blind*blind)
         {
           pl_surf.points.push_back(added_pt);
         }
@@ -304,14 +302,13 @@ class Preprocess
 
       if (i % point_filter_num[lidar_id] == 0)
       {
-        if(added_pt.x*added_pt.x+added_pt.y*added_pt.y+added_pt.z*added_pt.z > blind_sq)
+        if(added_pt.x*added_pt.x+added_pt.y*added_pt.y+added_pt.z*added_pt.z > blind*blind)
         {
           pl_surf.points.push_back(added_pt);
         }
       }
     }
   }
-  double blind_sq;
 };
 
 /* Key of Hash Table */
