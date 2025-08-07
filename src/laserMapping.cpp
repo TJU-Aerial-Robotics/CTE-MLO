@@ -1001,9 +1001,9 @@ int main(int argc, char** argv)
    
     nh.param<bool>("mapping/use_prebuild_map", PREBUILDMAP, false);
     std::vector<double> init_T;
-    nh.param<vector<double>>("mapping/init_T", init_T, std::vector<double>());
-    p_kf->init_pose<<MAT_FROM_ARRAY(init_T);
+    nh.param<vector<double>>("mapping/init_T", init_T, std::vector<double>());    
     if (PREBUILDMAP) {
+        p_kf->init_pose<<MAT_FROM_ARRAY(init_T);
         std::string offline_map_path;
         nh.param<std::string>("mapping/offline_map_path", offline_map_path, "");
         cout << "Loading Pre-build Map PCD ..." << endl;
@@ -1011,7 +1011,7 @@ int main(int argc, char** argv)
             PCL_ERROR("Couldn't read Pre-build Map.\n");
         }
         cut_voxel<pcl::PointXYZI>(surf_map, pre_build_cloud);
-        PCL_ERROR("The Pre-build Map has been Voxelized.\n");
+        std::cout << "The Pre-build Map has been Voxelized.\n" << std::endl;
     }
     
     path.header.stamp    = ros::Time::now();
